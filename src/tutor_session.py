@@ -15,7 +15,7 @@ import re
 from src.config import SYSTEM_PROMPT_PATH, CONVERSATION_LOG_PATH
 import src.config as config_module
 from src.schemas import SessionConfig, TutorOutput, fallback_output
-from src.gemini_client import call_gemini
+from src.gemini_client import call_gemini, GeminiUnavailableError
 from src.phase_manager import (
     validate_phase,
     fallback_phase_update,
@@ -114,6 +114,53 @@ class TutorSession:
 
     # ── JSON parse + validate with one retry ─────────────────────────────────
 
+    def _friendly_error_response(self, error: "GeminiUnavailableError") -> dict:
+        """
+        Returns a warm, user-friendly response when Gemini is unavailable.
+        Never exposes raw API errors to the user.
+        """
+        lang = self.config.language_preference
+        icp  = self.config.icp_type
+
+        if error.reason == "rate_limit":
+            wait = error.retry_after
+            if lang == "hi":
+                msg = (f"Thoda sa wait karo — main abhi bahut busy hoon! "
+                       f"Approximately {wait} seconds mein try karo. "
+                       f"Tab tak apne notes review karo. 😊")
+            elif lang == "mixed":
+                msg = (f"Ek second — I'm a bit overwhelmed right now! "
+                       f"Please try again in about {wait} seconds. "
+                       f"Tab tak jo seekha hai usse revise karo. 😊")
+            else:
+                if icp == "high_wage":
+                    msg = (f"I'm hitting my rate limit — please retry in ~{wait} seconds. "
+                           f"Use the time to review what we covered.")
+                else:
+                    msg = (f"I need a quick breather! Please try again in about {wait} seconds. "
+                           f"You're doing great — don't stop now! 😊")
+
+        elif error.reason == "server_error":
+            if lang in ["hi", "mixed"]:
+                msg = "Kuch technical issue aa gaya hai — thodi der baad try karo. Main yahan hoon! 🙏"
+            else:
+                msg = "I ran into a small technical hiccup. Please try again in a moment — I'm still here! 🙏"
+
+        else:
+            if lang in ["hi", "mixed"]:
+                msg = "Kuch nahi hua — dobara try karo please. Main ready hoon! 😊"
+            else:
+                msg = "Something went wrong on my end. Please try again — I'm ready when you are! 😊"
+
+        return {
+            "tutor_response":      msg,
+            "updated_ca_phase":    self.current_phase,   # phase unchanged
+            "on_topic_flag":       True,
+            "suggested_next_action": f"Please try again in {error.retry_after} seconds." if error.retry_after else "Please try again.",
+            "_is_error_response":  True,
+            "_retry_after":        error.retry_after,
+        }
+
     def _parse_and_validate(self, raw_text: str) -> dict:
         # Attempt 1
         try:
@@ -172,13 +219,27 @@ class TutorSession:
         # ── 3. Re-evaluate phase from updated mastery ─────────────────────────
         mastery_suggested_phase = phase_from_mastery(self.mastery_level, self.config.icp_type)
 
-        # ── 4. Call Gemini ────────────────────────────────────────────────────
-        raw_response = call_gemini(
-            system_prompt=_SYSTEM_PROMPT,
-            session_config=self._session_config_dict(signal_scores),
-            conversation_history=self.conversation_history,
-            user_message=user_message,
-        )
+        # ── 4. Call Gemini (with retry + graceful error handling) ────────────
+        try:
+            raw_response = call_gemini(
+                system_prompt=_SYSTEM_PROMPT,
+                session_config=self._session_config_dict(signal_scores),
+                conversation_history=self.conversation_history,
+                user_message=user_message,
+            )
+        except GeminiUnavailableError as e:
+            output = self._friendly_error_response(e)
+            output["_debug"] = {
+                "signal_scores":  signal_scores,
+                "mastery_before": round(old_mastery, 3),
+                "mastery_after":  round(self.mastery_level, 3),
+                "mastery_phase":  mastery_suggested_phase,
+                "final_phase":    self.current_phase,
+                "turn":           self.turn_count,
+                "error":          e.reason,
+                "retry_after":    e.retry_after,
+            }
+            return output
 
         # ── 5. Parse + validate Gemini output ────────────────────────────────
         output = self._parse_and_validate(raw_response)

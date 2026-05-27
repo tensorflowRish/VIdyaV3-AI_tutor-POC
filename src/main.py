@@ -120,7 +120,8 @@ def run_chat(session: TutorSession, debug: bool):
         try:
             output = session.process_turn(raw, debug=debug)
         except Exception as e:
-            print_error(f"Gemini call failed: {e}")
+            print(" " * 30, end="\r")
+            print_warning("Something went wrong. Please try again in a moment.")
             continue
 
         print(" " * 30, end="\r")
