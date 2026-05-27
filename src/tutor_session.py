@@ -20,7 +20,7 @@ from src.phase_manager import (
     validate_phase,
     fallback_phase_update,
     update_mastery,
-    phase_from_mastery,
+    suggest_starting_phase,
 )
 from src.signal_extractor import SignalScorecard
 from src.icp_profiles import get_icp
@@ -60,7 +60,7 @@ class TutorSession:
     def __init__(self, config: SessionConfig):
         self.config          = config
         self.mastery_level   = config.mastery_level          # live, updates each turn
-        self.current_phase   = config.ca_phase               # assigned from mastery at start
+        self.current_phase   = config.ca_phase               # suggested from mastery, Gemini may change from Turn 1
         self.conversation_history: list[dict] = []
         self.turn_count      = 0
         self.scorecard       = SignalScorecard(               # persistent signal scores
@@ -195,31 +195,22 @@ class TutorSession:
     def process_turn(self, user_message: str, debug: bool = False) -> dict:
         """
         Processes one user turn.
-        Order:
-          1. Update signal scorecard
-          2. Update mastery_level from scores
-          3. Re-evaluate phase from mastery
-          4. Call Gemini with full context
-          5. Validate output + apply phase
-          6. Update history
-          7. Return output + debug info
+        Phase is 100% Gemini's decision.
+        Mastery tracks skill level only — does not gate phase.
         """
         self.turn_count += 1
 
-        # ── 1. Update signal scorecard ────────────────────────────────────────
+        # 1. Update signal scorecard
         signal_scores = self.scorecard.update(
             user_message, self.config.skill_topic,
-            self.conversation_history,   # gives LLM judge conversation context
+            self.conversation_history,
         )
 
-        # ── 2. Update mastery from signal scores ──────────────────────────────
+        # 2. Update mastery (skill tracker only — never gates phase)
         old_mastery = self.mastery_level
         self.mastery_level = update_mastery(self.mastery_level, signal_scores)
 
-        # ── 3. Re-evaluate phase from updated mastery ─────────────────────────
-        mastery_suggested_phase = phase_from_mastery(self.mastery_level, self.config.icp_type)
-
-        # ── 4. Call Gemini (with retry + graceful error handling) ────────────
+        # 3. Call Gemini with full context
         try:
             raw_response = call_gemini(
                 system_prompt=_SYSTEM_PROMPT,
@@ -233,7 +224,6 @@ class TutorSession:
                 "signal_scores":  signal_scores,
                 "mastery_before": round(old_mastery, 3),
                 "mastery_after":  round(self.mastery_level, 3),
-                "mastery_phase":  mastery_suggested_phase,
                 "final_phase":    self.current_phase,
                 "turn":           self.turn_count,
                 "error":          e.reason,
@@ -241,80 +231,35 @@ class TutorSession:
             }
             return output
 
-        # ── 5. Parse + validate Gemini output ────────────────────────────────
+        # 4. Parse + validate Gemini output
         output = self._parse_and_validate(raw_response)
 
-        # Validate Gemini's phase choice
+        # 5. Apply Gemini's phase — Gemini owns phase fully, no overrides
         proposed_phase = output.get("updated_ca_phase", self.current_phase)
-        safe_phase = validate_phase(proposed_phase, self.current_phase)
+        safe_phase     = validate_phase(proposed_phase, self.current_phase)
 
         if safe_phase != proposed_phase:
-            # Gemini gave bad phase → signal-score fallback
+            # Gemini returned invalid phase string → signal-based fallback
             safe_phase = fallback_phase_update(self.current_phase, signal_scores)
-            print_warning(f"Phase corrected by score fallback → {safe_phase}")
-
-        # Mastery-based override — smart boundary enforcement.
-        #
-        # Rules:
-        # 1. Gemini CANNOT advance phase beyond what mastery supports.
-        #    If Gemini says COACH but mastery says MODEL → block it, stay MODEL.
-        #    This is the primary guard against premature phase jumps.
-        # 2. If mastery crossed a boundary UPWARD this turn → advance phase.
-        # 3. If mastery dropped significantly (>= 0.06) → regress phase.
-        # 4. Otherwise → trust Gemini's turn-by-turn judgment.
-        phase_order   = ["MODEL", "COACH", "SCAFFOLD", "FADE"]
-        mastery_idx   = phase_order.index(mastery_suggested_phase)
-        current_idx   = phase_order.index(safe_phase)
-        mastery_delta = self.mastery_level - old_mastery  # signed delta
-
-        if mastery_idx < current_idx:
-            # Gemini wants to ADVANCE beyond what mastery supports → BLOCK
-            # e.g. mastery=0.12 → MODEL bucket, but Gemini returned COACH
-            print_warning(
-                f"Gemini suggested {safe_phase} but mastery={self.mastery_level:.3f} "
-                f"only supports {mastery_suggested_phase} → holding at {mastery_suggested_phase}"
-            )
-            safe_phase = mastery_suggested_phase
-
-        elif mastery_idx > current_idx and mastery_delta > 0:
-            # Mastery boundary crossed upward this turn → advance
-            print_warning(
-                f"Mastery={self.mastery_level:.3f} "
-                f"({old_mastery:.3f}→{self.mastery_level:.3f}) "
-                f"↑ advancing: {safe_phase} → {mastery_suggested_phase}"
-            )
-            safe_phase = mastery_suggested_phase
-
-        elif mastery_idx < current_idx and mastery_delta <= -0.06:
-            # Mastery dropped significantly → regress
-            print_warning(
-                f"Mastery={self.mastery_level:.3f} "
-                f"({old_mastery:.3f}→{self.mastery_level:.3f}) "
-                f"↓ regressing: {safe_phase} → {mastery_suggested_phase}"
-            )
-            safe_phase = mastery_suggested_phase
-        # else: Gemini's phase decision stands (within mastery-permitted range)
+            print_warning(f"Invalid phase from Gemini → fallback: {safe_phase}")
 
         self.current_phase = safe_phase
         output["updated_ca_phase"] = safe_phase
 
-        # ── 6. Update conversation history ───────────────────────────────────
+        # 6. Update conversation history
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": output["tutor_response"]})
 
-        # ── 7. Attach debug info ──────────────────────────────────────────────
+        # 7. Attach debug info
         output["_debug"] = {
-            "signal_scores":       signal_scores,
-            "mastery_before":      round(old_mastery, 3),
-            "mastery_after":       round(self.mastery_level, 3),
-            "mastery_phase":       mastery_suggested_phase,
-            "final_phase":         safe_phase,
-            "turn":                self.turn_count,
+            "signal_scores":  signal_scores,
+            "mastery_before": round(old_mastery, 3),
+            "mastery_after":  round(self.mastery_level, 3),
+            "final_phase":    safe_phase,
+            "turn":           self.turn_count,
         }
 
         return output
-
-    # ── Save session log ──────────────────────────────────────────────────────
 
     def save_log(self):
         """Appends full session to logs/conversations.json."""

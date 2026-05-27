@@ -29,10 +29,6 @@ vidya-realtime-ai-tutor/
 
 ---
 
-## Streamlit start
-```bash
-    streamlit run streamlit_app.py
-
 ## Quickstart
 
 ```bash

@@ -233,9 +233,9 @@ def render_panel():
         if st.button("🚀 Start Session", use_container_width=True):
             try:
                 from src.schemas import SessionConfig
-                from src.icp_profiles import mastery_to_phase
+                from src.phase_manager import suggest_starting_phase
                 from src.tutor_session import TutorSession
-                auto_phase = mastery_to_phase(mastery_input, icp_type)
+                auto_phase = suggest_starting_phase(mastery_input, icp_type)
                 config = SessionConfig(
                     skill_topic=skill_topic, mastery_level=mastery_input,
                     icp_type=icp_type, ca_phase=auto_phase, language_preference=language,

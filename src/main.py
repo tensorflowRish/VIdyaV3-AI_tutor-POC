@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.config import VALID_LANGUAGES
 from src.schemas import SessionConfig
-from src.icp_profiles import mastery_to_phase, VALID_ICP_TYPES
+from src.phase_manager import suggest_starting_phase
+from src.icp_profiles import VALID_ICP_TYPES
 from src.tutor_session import TutorSession
 from src.utils import (
     banner, print_tutor, print_suggestion, print_debug,
@@ -40,7 +41,7 @@ def run_setup() -> SessionConfig:
     icp_type = icp_type.split(" ")[0]   # extract "low_wage" or "high_wage"
 
     # Auto-assign starting phase from mastery + ICP (no manual selection needed)
-    auto_phase = mastery_to_phase(mastery_level, icp_type)
+    auto_phase = suggest_starting_phase(mastery_level, icp_type)
     print(f"\n  {C.DIM}Starting phase auto-assigned from mastery level:{C.RESET} "
           f"{C.BOLD}{C.GREEN}{auto_phase}{C.RESET}")
 
