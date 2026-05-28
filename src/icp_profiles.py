@@ -81,10 +81,10 @@ ICP_PROFILES = {
         "anti_stereotype_threat": "You're not behind. You're starting now.",
         # mastery_level → starting CA phase (more support at every level)
         "phase_thresholds": {
-            "MODEL":    (0.0,  0.40),
-            "COACH":    (0.40, 0.65),
-            "SCAFFOLD": (0.65, 0.85),
-            "FADE":     (0.85, 1.01),
+            "MODEL":    (0.0,  0.25),
+            "COACH":    (0.25, 0.50),
+            "SCAFFOLD": (0.50, 0.75),
+            "FADE":     (0.75, 1.01),
         },
     },
 
