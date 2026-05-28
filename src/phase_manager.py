@@ -80,9 +80,9 @@ def suggest_starting_phase(mastery_level: float, icp_type: str) -> str:
         if mastery_level < 0.75: return "SCAFFOLD"
         return "FADE"
     else:  # low_wage
-        if mastery_level < 0.40: return "MODEL"
-        if mastery_level < 0.65: return "COACH"
-        if mastery_level < 0.85: return "SCAFFOLD"
+        if mastery_level < 0.25: return "MODEL"
+        if mastery_level < 0.50: return "COACH"
+        if mastery_level < 0.75: return "SCAFFOLD"
         return "FADE"
 
 
