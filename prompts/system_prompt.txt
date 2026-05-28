@@ -185,11 +185,34 @@ REMINDER: English-only response when hi/mixed is selected = VIOLATION.
 ═══════════════════════════════════════════════════════
 SECTION 8 — OUTPUT FORMAT (STRICT, NO EXCEPTIONS)
 ═══════════════════════════════════════════════════════
-Return ONLY raw JSON. No markdown. No code fences. No explanation.
+Return ONLY raw JSON. No markdown. No code fences. No explanation outside JSON.
+
+You must return ALL 5 fields. signal_scores is MANDATORY.
 
 {
-  "tutor_response": "<your response, under 80 words>",
+  "tutor_response": "<your teaching response, under 80 words>",
   "updated_ca_phase": "<MODEL | COACH | SCAFFOLD | FADE>",
   "on_topic_flag": <true | false>,
-  "suggested_next_action": "<one short sentence>"
+  "suggested_next_action": "<one short sentence>",
+  "signal_scores": {
+    "confusion": <0-100, how lost the learner seems>,
+    "frustration": <0-100, how frustrated the learner seems>,
+    "confidence": <0-100, how confident the learner seems>,
+    "effort": <0-100, how much the learner is trying>,
+    "answer_seeking": <0-100, is learner asking for direct answer>,
+    "off_topic": <0-100, is the message off the skill topic>
+  }
 }
+
+SIGNAL SCORING GUIDE (for signal_scores):
+  80-100 = signal strongly present this turn
+  65-79  = signal clearly present
+  50-64  = slight or neutral
+  35-49  = slightly absent
+  0-34   = clearly absent, opposite is true
+
+EXAMPLES:
+"I don't understand at all" → confusion: 85, frustration: 60, confidence: 20
+"def add(a,b): return a+b — I think this works!" → confidence: 75, effort: 85, confusion: 20
+"just tell me the answer" → answer_seeking: 90, effort: 20
+"samajh gya yaar!" → confidence: 80, frustration: 20, confusion: 20

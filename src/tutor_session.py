@@ -13,7 +13,6 @@ import json
 import re
 
 from src.config import SYSTEM_PROMPT_PATH, CONVERSATION_LOG_PATH
-import src.config as config_module
 from src.schemas import SessionConfig, TutorOutput, fallback_output
 from src.gemini_client import call_gemini, GeminiUnavailableError
 from src.phase_manager import (
@@ -63,10 +62,7 @@ class TutorSession:
         self.current_phase   = config.ca_phase               # suggested from mastery, Gemini may change from Turn 1
         self.conversation_history: list[dict] = []
         self.turn_count      = 0
-        self.scorecard       = SignalScorecard(               # persistent signal scores
-            api_key=config_module.GEMINI_API_KEY,
-            model=config_module.GEMINI_MODEL,
-        )
+        self.scorecard       = SignalScorecard()              # persistent signal scores
         self.icp_profile     = get_icp(config.icp_type)      # tone + example rules
 
     # ── Session config dict sent to Gemini every turn ────────────────────────
@@ -200,25 +196,24 @@ class TutorSession:
         """
         self.turn_count += 1
 
-        # 1. Update signal scorecard
-        signal_scores = self.scorecard.update(
-            user_message, self.config.skill_topic,
-            self.conversation_history,
-        )
-
-        # 2. Update mastery (skill tracker only — never gates phase)
+        # 1. Call Gemini — single API call returns tutor response + signal scores
         old_mastery = self.mastery_level
-        self.mastery_level = update_mastery(self.mastery_level, signal_scores)
 
-        # 3. Call Gemini with full context
+        # Use last known signal scores for the prompt (before this turn updates them)
+        current_signal_scores = self.scorecard.to_dict()
+
         try:
             raw_response = call_gemini(
                 system_prompt=_SYSTEM_PROMPT,
-                session_config=self._session_config_dict(signal_scores),
+                session_config=self._session_config_dict(current_signal_scores),
                 conversation_history=self.conversation_history,
                 user_message=user_message,
             )
         except GeminiUnavailableError as e:
+            # Use regex fallback for signals on error
+            signal_scores = self.scorecard.update_from_gemini(
+                None, user_message, self.config.skill_topic
+            )
             output = self._friendly_error_response(e)
             output["_debug"] = {
                 "signal_scores":  signal_scores,
@@ -231,15 +226,31 @@ class TutorSession:
             }
             return output
 
-        # 4. Parse + validate Gemini output
+        # 2. Parse + validate Gemini output (includes signal_scores)
         output = self._parse_and_validate(raw_response)
 
-        # 5. Apply Gemini's phase — Gemini owns phase fully, no overrides
+        # 3. Extract signal scores from Gemini's response and update scorecard
+        gemini_signals = None
+        if output.get("signal_scores"):
+            # Gemini returned signal scores — use them directly
+            raw_sigs = output["signal_scores"]
+            if isinstance(raw_sigs, dict):
+                gemini_signals = raw_sigs
+            elif hasattr(raw_sigs, 'to_dict'):
+                gemini_signals = raw_sigs.to_dict()
+
+        signal_scores = self.scorecard.update_from_gemini(
+            gemini_signals, user_message, self.config.skill_topic
+        )
+
+        # 4. Update mastery from signal scores
+        self.mastery_level = update_mastery(self.mastery_level, signal_scores)
+
+        # 5. Apply Gemini's phase decision — Gemini owns phase fully
         proposed_phase = output.get("updated_ca_phase", self.current_phase)
         safe_phase     = validate_phase(proposed_phase, self.current_phase)
 
         if safe_phase != proposed_phase:
-            # Gemini returned invalid phase string → signal-based fallback
             safe_phase = fallback_phase_update(self.current_phase, signal_scores)
             print_warning(f"Invalid phase from Gemini → fallback: {safe_phase}")
 
@@ -257,6 +268,7 @@ class TutorSession:
             "mastery_after":  round(self.mastery_level, 3),
             "final_phase":    safe_phase,
             "turn":           self.turn_count,
+            "api_calls":      1,
         }
 
         return output
