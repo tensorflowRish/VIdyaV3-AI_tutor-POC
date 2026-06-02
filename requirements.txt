@@ -1,5 +1,6 @@
 google-genai
 python-dotenv
 pydantic
-streamlit
+streamlit>=1.41.0
 pandas
+gTTS>=2.5.0

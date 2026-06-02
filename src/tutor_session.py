@@ -226,6 +226,11 @@ class TutorSession:
                 "error":          e.reason,
                 "retry_after":    e.retry_after,
             }
+            # Keep history in sync with UI (Streamlit / save_log)
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append(
+                {"role": "assistant", "content": output["tutor_response"]}
+            )
             return output
 
         # 2. Parse + validate Gemini output (includes signal_scores)
@@ -315,8 +320,13 @@ class TutorSession:
 
         return output
 
-    def save_log(self):
-        """Appends full session to logs/conversations.json."""
+    def save_log(self, conversation: list[dict] | None = None):
+        """
+        Appends full session to logs/conversations.json.
+
+        conversation: optional override (e.g. Streamlit UI messages) as
+        [{"role": "user"|"assistant", "content": "..."}, ...].
+        """
         CONVERSATION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
         existing: list = []
@@ -329,12 +339,21 @@ class TutorSession:
             except json.JSONDecodeError:
                 existing = []
 
+        if conversation is not None:
+            conv = [
+                {"role": m["role"], "content": m["content"]}
+                for m in conversation
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+        else:
+            conv = self.conversation_history
+
         session_record = {
             "config":             self.config.model_dump(),
             "final_phase":        self.current_phase,
             "final_mastery":      round(self.mastery_level, 3),
             "turns":              self.turn_count,
-            "conversation":       self.conversation_history,
+            "conversation":       conv,
             "signal_scorecard":   self.scorecard.to_dict(),
             "signal_history":     self.scorecard.history,
         }
