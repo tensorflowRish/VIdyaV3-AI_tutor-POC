@@ -10,7 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL: str   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL: str   = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 SYSTEM_PROMPT_PATH:    Path = ROOT_DIR / "prompts" / "system_prompt.txt"
 CONVERSATION_LOG_PATH: Path = ROOT_DIR / "logs" / "conversations.json"

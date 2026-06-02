@@ -81,9 +81,9 @@ ICP_PROFILES = {
         "anti_stereotype_threat": "You're not behind. You're starting now.",
         # mastery_level → starting CA phase (more support at every level)
         "phase_thresholds": {
-            "MODEL":    (0.0,  0.25),
-            "COACH":    (0.25, 0.50),
-            "SCAFFOLD": (0.50, 0.75),
+            "MODEL":    (0.0,  0.24),
+            "COACH":    (0.25, 0.49),
+            "SCAFFOLD": (0.50, 0.74),
             "FADE":     (0.75, 1.01),
         },
     },
@@ -130,9 +130,9 @@ ICP_PROFILES = {
         "anti_stereotype_threat": None,
         # high_wage advances earlier — same mastery = higher independence expected
         "phase_thresholds": {
-            "MODEL":    (0.0,  0.25),
-            "COACH":    (0.25, 0.50),
-            "SCAFFOLD": (0.50, 0.75),
+            "MODEL":    (0.0,  0.24),
+            "COACH":    (0.25, 0.49),
+            "SCAFFOLD": (0.50, 0.74),
             "FADE":     (0.75, 1.01),
         },
     },

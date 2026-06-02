@@ -62,7 +62,8 @@ class TutorSession:
         self.current_phase   = config.ca_phase               # suggested from mastery, Gemini may change from Turn 1
         self.conversation_history: list[dict] = []
         self.turn_count      = 0
-        self.scorecard       = SignalScorecard()              # persistent signal scores
+        self.scorecard            = SignalScorecard()              # persistent signal scores
+        self.answer_seeking_count = 0    # consecutive turns with answer_seeking signal
         self.icp_profile     = get_icp(config.icp_type)      # tone + example rules
 
     # ── Session config dict sent to Gemini every turn ────────────────────────
@@ -74,10 +75,11 @@ class TutorSession:
         """
         ast = self.icp_profile.get("anti_stereotype_threat")
         return {
-            "skill_topic":         self.config.skill_topic,
-            "mastery_level":       round(self.mastery_level, 3),
-            "ca_phase":            self.current_phase,
-            "language_preference": self.config.language_preference,
+            "skill_topic":            self.config.skill_topic,
+            "mastery_level":          round(self.mastery_level, 3),
+            "ca_phase":               self.current_phase,
+            "language_preference":    self.config.language_preference,
+            "answer_seeking_streak":  self.answer_seeking_count,
 
             # ── Full ICP context (who this learner is + how to teach them) ────
             "icp": {
@@ -254,6 +256,45 @@ class TutorSession:
             safe_phase = fallback_phase_update(self.current_phase, signal_scores)
             print_warning(f"Invalid phase from Gemini → fallback: {safe_phase}")
 
+        # ── Answer-seeking gradual regression ────────────────────────────────
+        # Docs say: never give answer directly (hold + refuse).
+        # Phase should NOT regress immediately on first answer_seeking signal.
+        # Logic:
+        #   Turn 1 of answer_seeking → hold current phase (don't regress)
+        #   Turn 2 consecutive       → hold current phase (still don't regress)
+        #   Turn 3+ consecutive      → regress ONE phase max (not more)
+        # This prevents FADE → COACH jumps on a single "just tell me" message.
+        PHASE_ORDER = ["MODEL", "COACH", "SCAFFOLD", "FADE"]
+        ans_seeking_active = signal_scores.get("answer_seeking", 50) >= 65
+
+        if ans_seeking_active:
+            self.answer_seeking_count += 1
+            current_idx  = PHASE_ORDER.index(self.current_phase) if self.current_phase in PHASE_ORDER else 0
+            proposed_idx = PHASE_ORDER.index(safe_phase) if safe_phase in PHASE_ORDER else current_idx
+
+            if self.answer_seeking_count <= 2:
+                # First or second consecutive turn — hold current phase, no regression
+                if proposed_idx < current_idx:
+                    safe_phase = self.current_phase
+                    print_warning(
+                        f"Answer-seeking turn {self.answer_seeking_count}/2 "
+                        f"→ holding phase at {self.current_phase} (no regression yet)"
+                    )
+            else:
+                # 3rd+ consecutive turn — allow max ONE phase regression
+                if current_idx > 0:
+                    one_regress = PHASE_ORDER[current_idx - 1]
+                    if proposed_idx < current_idx - 1:
+                        # Gemini wanted to jump multiple phases back → cap at one
+                        safe_phase = one_regress
+                        print_warning(
+                            f"Answer-seeking {self.answer_seeking_count} turns → "
+                            f"capping regression at one phase: {self.current_phase} → {safe_phase}"
+                        )
+        else:
+            # Signal gone — reset counter
+            self.answer_seeking_count = 0
+
         self.current_phase = safe_phase
         output["updated_ca_phase"] = safe_phase
 
@@ -263,12 +304,13 @@ class TutorSession:
 
         # 7. Attach debug info
         output["_debug"] = {
-            "signal_scores":  signal_scores,
-            "mastery_before": round(old_mastery, 3),
-            "mastery_after":  round(self.mastery_level, 3),
-            "final_phase":    safe_phase,
-            "turn":           self.turn_count,
-            "api_calls":      1,
+            "signal_scores":          signal_scores,
+            "mastery_before":         round(old_mastery, 3),
+            "mastery_after":          round(self.mastery_level, 3),
+            "final_phase":            safe_phase,
+            "turn":                   self.turn_count,
+            "api_calls":              1,
+            "answer_seeking_streak":  self.answer_seeking_count,
         }
 
         return output
