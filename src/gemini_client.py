@@ -187,3 +187,28 @@ def call_gemini(
                 )
 
     raise GeminiUnavailableError(reason="max_retries_exceeded", retry_after=last_wait)
+
+
+def transcribe_audio_bytes(audio_bytes: bytes, mime_type: str = "audio/wav") -> str:
+    """
+    Transcribes user audio using Gemini multimodal input.
+    Returns plain transcript text.
+    """
+    try:
+        response = _client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                (
+                    "Transcribe this user audio message. Return only the exact spoken "
+                    "text, with no commentary, no labels, and no markdown."
+                ),
+                types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+            ),
+        )
+        return (response.text or "").strip()
+    except Exception as e:
+        raise GeminiUnavailableError(reason=f"transcription_failed: {str(e)[:100]}", retry_after=0)
