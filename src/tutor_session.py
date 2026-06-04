@@ -300,6 +300,47 @@ class TutorSession:
             # Signal gone — reset counter
             self.answer_seeking_count = 0
 
+        # ── Anti-repetition guard ─────────────────────────────────────────────
+        # If Gemini's response is nearly identical to the last tutor message,
+        # log a warning. The system prompt's Zero Repetition Rule should prevent
+        # this, but we add a safety net here.
+        new_response = output.get("tutor_response", "")
+        if self.conversation_history:
+            last_assistant_turns = [
+                t["content"] for t in self.conversation_history[-6:]
+                if t["role"] == "assistant"
+            ]
+            for prev in last_assistant_turns:
+                # Check for ≥70% character-level overlap as a repetition signal
+                shorter = min(len(new_response), len(prev))
+                if shorter > 30:
+                    overlap = sum(a == b for a, b in zip(new_response[:shorter], prev[:shorter]))
+                    if overlap / shorter >= 0.70:
+                        print_warning(
+                            "Repetition detected — Gemini response ≥70% similar to a recent reply."
+                        )
+                        break
+
+        # ── Mastery gate: block premature FADE advancement ────────────────────
+        # The report identified mastery 0.15 reaching FADE in one conversation
+        # as a critical failure. Enforce minimum mastery thresholds per phase.
+        PHASE_MIN_MASTERY = {
+            "COACH":    0.15,   # must be past absolute beginner
+            "SCAFFOLD": 0.35,   # must show some sustained understanding
+            "FADE":     0.60,   # must have solid skill foundation
+        }
+        proposed_phase_order = PHASE_ORDER.index(safe_phase) if safe_phase in PHASE_ORDER else 0
+        current_phase_order  = PHASE_ORDER.index(self.current_phase) if self.current_phase in PHASE_ORDER else 0
+
+        if proposed_phase_order > current_phase_order:
+            min_mastery = PHASE_MIN_MASTERY.get(safe_phase, 0.0)
+            if self.mastery_level < min_mastery:
+                print_warning(
+                    f"Mastery gate blocked {self.current_phase} → {safe_phase} "
+                    f"(mastery={self.mastery_level:.3f} < required {min_mastery})"
+                )
+                safe_phase = self.current_phase
+
         self.current_phase = safe_phase
         output["updated_ca_phase"] = safe_phase
 
@@ -313,6 +354,10 @@ class TutorSession:
             "mastery_before":         round(old_mastery, 3),
             "mastery_after":          round(self.mastery_level, 3),
             "final_phase":            safe_phase,
+            "mastery_phase":          PHASE_ORDER[min(
+                                          max(0, PHASE_ORDER.index(self.current_phase)),
+                                          len(PHASE_ORDER) - 1
+                                      )],
             "turn":                   self.turn_count,
             "api_calls":              1,
             "answer_seeking_streak":  self.answer_seeking_count,

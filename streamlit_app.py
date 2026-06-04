@@ -139,15 +139,6 @@ div[data-testid="stForm"] button {
     color:var(--text) !important; border-radius:8px !important;
 }
 hr { border-color:var(--border) !important; }
-
-/* Make Streamlit dropdown menus clickable/visible above custom layout */
-div[data-baseweb="popover"], div[data-testid="stPopover"] {
-    z-index:999999 !important;
-}
-ul[role="listbox"] {
-    background:var(--bg3) !important;
-    border:1px solid var(--border) !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -386,43 +377,7 @@ def render_panel():
 
     disabled = st.session_state.configured
 
-    skill_topics = [
-        "Python Programming",
-        "Software Development",
-        "Databases (SQL / NoSQL)",
-        "Backend Development",
-        "Cloud & DevOps concepts",
-        "Technical interview preparation",
-        "AI/ML related skills",
-        "Data and analytics concepts",
-        "Other / Custom topic",
-    ]
-
-    selected_skill_topic = st.selectbox(
-        "Skill Topic",
-        options=skill_topics,
-        index=0,
-        key="skill_topic_dropdown",
-        disabled=disabled,
-        help="Choose a predefined topic, or select Other / Custom topic to type your own.",
-    )
-
-    custom_skill_topic = ""
-    if selected_skill_topic == "Other / Custom topic":
-        custom_skill_topic = st.text_input(
-            "Type Skill Topic",
-            value="",
-            placeholder="Example: Python decorators, SQL joins, Docker basics",
-            key="custom_skill_topic_input",
-            disabled=disabled,
-        )
-
-    skill_topic = (custom_skill_topic.strip() if selected_skill_topic == "Other / Custom topic" else selected_skill_topic)
-    if not skill_topic:
-        skill_topic = "Python Programming"
-
-    st.caption(f"Selected topic: {skill_topic}")
-
+    skill_topic = st.text_input("Skill Topic", value="Python functions", disabled=disabled)
     mastery_input = st.slider("Starting Mastery", 0.0, 1.0, 0.2, 0.05, disabled=disabled)
     icp_type = st.selectbox("ICP Type", ["low_wage", "high_wage"],
         format_func=lambda x: {"low_wage":"🌱 Low Wage","high_wage":"🚀 High Wage"}[x],
