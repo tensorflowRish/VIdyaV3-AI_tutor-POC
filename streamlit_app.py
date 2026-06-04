@@ -3,8 +3,11 @@ streamlit_app.py — Vidya V3 Real-Time AI Tutor — Streamlit UI
 Run: streamlit run streamlit_app.py
 """
 
+import base64
+import json
 import logging
 import streamlit as st
+import streamlit.components.v1 as components
 import sys, os
 
 logger = logging.getLogger(__name__)
@@ -136,6 +139,15 @@ div[data-testid="stForm"] button {
     color:var(--text) !important; border-radius:8px !important;
 }
 hr { border-color:var(--border) !important; }
+
+/* Make Streamlit dropdown menus clickable/visible above custom layout */
+div[data-baseweb="popover"], div[data-testid="stPopover"] {
+    z-index:999999 !important;
+}
+ul[role="listbox"] {
+    background:var(--bg3) !important;
+    border:1px solid var(--border) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -175,6 +187,9 @@ for k, v in {
     "mastery_history": [], "configured": False,
     "turn_count": 0, "panel_open": True,
     "voice_mode": False, "tutor_voice_audio": None,
+    "voice_autoplay": False, "voice_player_key": 0,
+    "conversation_mode": "Realtime user",
+    "ai_turn_limit": 6, "ai_sim_running": False,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -198,7 +213,7 @@ def _submit_user_message(sess, user_input: str, *, speak_reply: bool = False) ->
         "phase": output["updated_ca_phase"],
         "mastery": sess.mastery_level,
         "suggestion": output.get("suggested_next_action", ""),
-        "signals": output["_debug"].get("signal_scores", {}),
+        "signals": output.get("_debug", {}).get("signal_scores", {}),
         "is_error": is_error,
         "retry_after": retry_after,
     })
@@ -210,6 +225,8 @@ def _submit_user_message(sess, user_input: str, *, speak_reply: bool = False) ->
             from src.voice import synthesize_speech
             lang = sess.config.language_preference
             st.session_state.tutor_voice_audio = synthesize_speech(tutor_text, lang)
+            st.session_state.voice_autoplay = True
+            st.session_state.voice_player_key = st.session_state.get("voice_player_key", 0) + 1
         except Exception:
             logger.warning("Tutor voice synthesis failed", exc_info=True)
             st.session_state.tutor_voice_audio = None
@@ -224,6 +241,105 @@ def _submit_user_message(sess, user_input: str, *, speak_reply: bool = False) ->
             f"⏱️ Vidya will be ready again in ~{retry_after} seconds. "
             "Please wait before sending the next message."
         )
+
+
+def _last_assistant_text() -> str:
+    """Returns latest tutor reply so the AI user can respond naturally."""
+    for msg in reversed(st.session_state.messages):
+        if msg.get("role") == "assistant":
+            return msg.get("content", "")
+    return ""
+
+
+def _generate_ai_user_message(sess) -> str:
+    """
+    Generates one realistic learner message for AI-generated conversation mode.
+    This is UI-only simulation and does not change TutorSession/backend logic.
+    """
+    try:
+        from google import genai
+        from src.config import GEMINI_API_KEY, GEMINI_MODEL
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        cfg = sess.config
+        turn_no = st.session_state.turn_count + 1
+        recent = [
+            {"role": m.get("role"), "content": m.get("content", "")}
+            for m in st.session_state.messages[-6:]
+        ]
+
+        prompt = f"""
+You are simulating ONLY the learner/user side for testing an AI tutor.
+Generate the next learner message for turn {turn_no}.
+
+Session:
+- Topic: {cfg.skill_topic}
+- Starting/live mastery: {sess.mastery_level:.2f}
+- ICP profile: {cfg.icp_type}
+- Language: {cfg.language_preference}
+- Current tutor phase: {sess.current_phase}
+- Conversation should end around {st.session_state.ai_turn_limit} learner turns.
+
+Recent conversation:
+{json.dumps(recent, ensure_ascii=False, indent=2)}
+
+Rules:
+- Return ONLY the learner message text. No quotes, no labels, no JSON.
+- Keep it natural and short: 1-3 sentences.
+- Match the selected language: en = English, hi = Hindi/Hinglish, mixed = Hinglish mix.
+- Behave like a real learner at the selected mastery and ICP context.
+- Across the 5-6 turns, vary behavior: confusion, attempt, partial answer, follow-up, confidence, or answer-seeking.
+- Ask or respond about the selected topic only.
+""".strip()
+
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        message = (response.text or "").strip().strip('"').strip("'")
+        return message or _fallback_ai_user_message(sess)
+    except Exception:
+        logger.warning("AI user generation failed; using fallback message", exc_info=True)
+        return _fallback_ai_user_message(sess)
+
+
+def _fallback_ai_user_message(sess) -> str:
+    """Safe local fallback if the AI-user model call fails."""
+    topic = sess.config.skill_topic
+    lang = sess.config.language_preference
+    turn_no = st.session_state.turn_count + 1
+
+    if lang == "en":
+        samples = [
+            f"I am new to {topic}. Can you explain it with a simple example?",
+            "I think I understand a little, but I am confused about how to use it in code.",
+            "Let me try: I need to write the structure first, then call it. Is that right?",
+            "Can you give me a small hint instead of the full answer?",
+            "Okay, I think I got it now. Can I try one example?",
+            "Here is my attempt. Please check if my logic is correct.",
+        ]
+    elif lang == "hi":
+        samples = [
+            f"Mujhe {topic} bilkul basic se samjhao, simple example ke saath.",
+            "Thoda samajh aa raha hai, par code mein kaise use karna hai confuse hoon.",
+            "Main try karta hoon: pehle structure likhna hai, phir call karna hai. Sahi hai?",
+            "Full answer mat do, bas ek chhota hint de do.",
+            "Ab thoda clear hai. Kya main ek example try karun?",
+            "Yeh mera attempt hai, batao logic sahi hai ya nahi.",
+        ]
+    else:
+        samples = [
+            f"Mujhe {topic} basic se explain karo with simple example.",
+            "Thoda clear hai but code mein use kaise hota hai, I am confused.",
+            "Let me try: pehle structure likhte hain, then usko call karte hain. Sahi?",
+            "Full answer mat dena, just ek small hint de do.",
+            "I think ab clear ho raha hai. Can I try one example?",
+            "Yeh mera attempt hai, please check if logic correct hai.",
+        ]
+    return samples[min(turn_no - 1, len(samples) - 1)]
+
+
+def _run_ai_generated_turn(sess) -> None:
+    """Generate one AI learner message, then send it through normal tutor flow."""
+    learner_msg = _generate_ai_user_message(sess)
+    _submit_user_message(sess, learner_msg, speak_reply=False)
 
 
 # ── Layout: toggle button + two columns ──────────────────────────────────────
@@ -270,7 +386,43 @@ def render_panel():
 
     disabled = st.session_state.configured
 
-    skill_topic = st.text_input("Skill Topic", value="Python functions", disabled=disabled)
+    skill_topics = [
+        "Python Programming",
+        "Software Development",
+        "Databases (SQL / NoSQL)",
+        "Backend Development",
+        "Cloud & DevOps concepts",
+        "Technical interview preparation",
+        "AI/ML related skills",
+        "Data and analytics concepts",
+        "Other / Custom topic",
+    ]
+
+    selected_skill_topic = st.selectbox(
+        "Skill Topic",
+        options=skill_topics,
+        index=0,
+        key="skill_topic_dropdown",
+        disabled=disabled,
+        help="Choose a predefined topic, or select Other / Custom topic to type your own.",
+    )
+
+    custom_skill_topic = ""
+    if selected_skill_topic == "Other / Custom topic":
+        custom_skill_topic = st.text_input(
+            "Type Skill Topic",
+            value="",
+            placeholder="Example: Python decorators, SQL joins, Docker basics",
+            key="custom_skill_topic_input",
+            disabled=disabled,
+        )
+
+    skill_topic = (custom_skill_topic.strip() if selected_skill_topic == "Other / Custom topic" else selected_skill_topic)
+    if not skill_topic:
+        skill_topic = "Python Programming"
+
+    st.caption(f"Selected topic: {skill_topic}")
+
     mastery_input = st.slider("Starting Mastery", 0.0, 1.0, 0.2, 0.05, disabled=disabled)
     icp_type = st.selectbox("ICP Type", ["low_wage", "high_wage"],
         format_func=lambda x: {"low_wage":"🌱 Low Wage","high_wage":"🚀 High Wage"}[x],
@@ -278,6 +430,21 @@ def render_panel():
     language = st.selectbox("Language", ["en", "hi", "mixed"],
         format_func=lambda x: {"en":"🇬🇧 English","hi":"🇮🇳 Hindi","mixed":"🔀 Mixed"}[x],
         disabled=disabled)
+
+    conversation_mode = st.radio(
+        "Conversation Mode",
+        ["Realtime user", "AI generated conversation"],
+        index=0,
+        help=(
+            "Realtime user keeps the current app behavior. "
+            "AI generated conversation creates learner messages from the model for 5-6 turns."
+        ),
+        disabled=disabled,
+    )
+    ai_turn_limit = st.slider(
+        "AI Generated Turns", 5, 6, 6, 1,
+        disabled=disabled or conversation_mode != "AI generated conversation",
+    )
 
     if not disabled:
         if st.button("🚀 Start Session", use_container_width=True):
@@ -292,6 +459,8 @@ def render_panel():
                 )
                 st.session_state.session        = TutorSession(config)
                 st.session_state.configured     = True
+                st.session_state.conversation_mode = conversation_mode
+                st.session_state.ai_turn_limit = ai_turn_limit
                 st.session_state.phase_history  = [(0, auto_phase)]
                 st.session_state.mastery_history= [(0, mastery_input)]
                 st.rerun()
@@ -302,6 +471,8 @@ def render_panel():
             for k in [
                 "session", "messages", "phase_history", "mastery_history",
                 "configured", "turn_count", "voice_mode", "tutor_voice_audio",
+                "voice_autoplay", "voice_player_key", "conversation_mode",
+                "ai_turn_limit", "ai_sim_running",
             ]:
                 del st.session_state[k]
             st.rerun()
@@ -415,7 +586,7 @@ def render_chat():
     # Chat messages
     if not st.session_state.messages:
         st.markdown("""<div style="text-align:center;padding:30px;color:#6B6B85;font-size:14px">
-            Session started. Type your first message below. 👇
+            Session started. Use the controls below to continue. 👇
         </div>""", unsafe_allow_html=True)
 
     for msg in st.session_state.messages:
@@ -445,88 +616,146 @@ def render_chat():
     st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
 
     if st.session_state.get("tutor_voice_audio"):
-        st.markdown(
-            '<div class="sec-hdr" style="margin-top:4px">Tutor voice reply</div>',
-            unsafe_allow_html=True,
-        )
-        st.audio(st.session_state.tutor_voice_audio, format="audio/mp3")
-
-    # Voice mode (server-side STT/TTS — optional; text chat unchanged when off)
-    voice_on = st.toggle(
-        "Voice mode",
-        value=st.session_state.voice_mode,
-        help="Speak your question; Vidya replies with server-generated audio (Gemini + Google TTS).",
-        key="voice_mode_toggle",
-    )
-    st.session_state.voice_mode = voice_on
-
-    if voice_on:
-        st.caption(
-            "Record your question, then send. Speech is transcribed on the server (Gemini); "
-            "replies are synthesized on the server (Google TTS) and may take a few seconds."
-        )
-        voice_col, send_voice_col = st.columns([4, 1])
-        with voice_col:
-            voice_clip = st.audio_input(
-                "Record your question",
-                key="vidya_voice_input",
-                label_visibility="collapsed",
+        if st.session_state.get("voice_autoplay"):
+            pid = st.session_state.voice_player_key
+            b64 = base64.b64encode(st.session_state.tutor_voice_audio).decode()
+            components.html(
+                f'<audio id="tv{pid}" autoplay playsinline '
+                f'src="data:audio/mp3;base64,{b64}"></audio>',
+                height=0,
             )
-        with send_voice_col:
-            send_voice = st.button("Send voice", use_container_width=True, key="send_voice_btn")
+            st.session_state.voice_autoplay = False
 
-        if send_voice:
-            if voice_clip is None:
-                st.warning("Record audio first, then tap Send voice.")
-            else:
-                audio_bytes = (
-                    voice_clip.getvalue()
-                    if hasattr(voice_clip, "getvalue")
-                    else voice_clip.read()
-                )
-                mime = getattr(voice_clip, "type", None) or "audio/wav"
-                with st.spinner("Transcribing your voice..."):
-                    try:
-                        from src.voice import transcribe_audio
-                        transcript = transcribe_audio(
-                            audio_bytes,
-                            mime,
-                            sess.config.language_preference,
-                        )
-                    except Exception:
-                        st.error("Could not transcribe audio. Try again or use text chat.")
-                        transcript = ""
+        replay_col, _ = st.columns([1, 5])
+        with replay_col:
+            if st.button("🔁 Replay", key="replay_tutor_voice", use_container_width=True):
+                st.session_state.voice_autoplay = True
+                st.session_state.voice_player_key += 1
+                st.rerun()
 
-                if transcript:
-                    with st.spinner("Vidya is thinking..."):
-                        try:
-                            _submit_user_message(sess, transcript, speak_reply=True)
-                            st.rerun()
-                        except Exception:
-                            st.error("Something went wrong. Please try again in a moment.")
+    # AI generated conversation mode: model creates learner messages; TutorSession stays unchanged
+    if st.session_state.conversation_mode == "AI generated conversation":
+        current_turns = st.session_state.turn_count
+        max_turns = st.session_state.ai_turn_limit
+        st.markdown(f"**AI generated conversation mode** · {current_turns}/{max_turns} learner turns")
+        st.caption(
+            "The app generates learner messages from the selected topic, mastery, language, and ICP profile. "
+            "Each generated learner message is then processed by the same tutor pipeline."
+        )
+        c_auto1, c_auto2 = st.columns([1, 1])
+        with c_auto1:
+            one_turn = st.button(
+                "▶ Generate next learner turn",
+                use_container_width=True,
+                disabled=current_turns >= max_turns,
+            )
+        with c_auto2:
+            full_run = st.button(
+                "⚡ Run remaining turns",
+                use_container_width=True,
+                disabled=current_turns >= max_turns,
+            )
+
+        if one_turn and current_turns < max_turns:
+            with st.spinner("Generating AI learner and Vidya response..."):
+                try:
+                    _run_ai_generated_turn(sess)
+                    st.rerun()
+                except Exception:
+                    st.error("Could not run AI generated turn. Please try again.")
+
+        if full_run and current_turns < max_turns:
+            with st.spinner("Running AI generated conversation..."):
+                try:
+                    remaining = max_turns - current_turns
+                    for _ in range(remaining):
+                        _run_ai_generated_turn(sess)
+                    st.rerun()
+                except Exception:
+                    st.error("Could not complete the generated conversation. You can continue one turn at a time.")
+
+        if current_turns >= max_turns:
+            st.success("AI generated conversation completed. You can review signals, mastery, and session log below.")
 
         st.markdown("<div style='margin:6px 0 10px'></div>", unsafe_allow_html=True)
+        # Hide realtime text/voice inputs in this mode.
+    else:
+        # Voice mode (server-side STT/TTS — optional; text chat unchanged when off)
+        voice_on = st.toggle(
+            "Voice mode",
+            value=st.session_state.voice_mode,
+            help="Speak your question; Vidya replies with server-generated audio (Gemini + Google TTS).",
+            key="voice_mode_toggle",
+        )
+        st.session_state.voice_mode = voice_on
 
-    # Input
-    with st.form("chat_form", clear_on_submit=True):
-        ci, cb = st.columns([5,1])
-        with ci:
-            user_input = st.text_input("Message", placeholder="Type your message...",
-                                       label_visibility="collapsed")
-        with cb:
-            submitted = st.form_submit_button("Send →", use_container_width=True)
-
-    if submitted and user_input.strip():
-        with st.spinner("Vidya is thinking..."):
-            try:
-                _submit_user_message(
-                    sess,
-                    user_input.strip(),
-                    speak_reply=st.session_state.voice_mode,
+        if voice_on:
+            st.caption(
+                "Record your question, then send. Speech is transcribed on the server (Gemini); "
+                "if transcription fails, you can still send the message as text."
+            )
+            voice_col, send_voice_col = st.columns([4, 1])
+            with voice_col:
+                voice_clip = st.audio_input(
+                    "Record your question",
+                    key="vidya_voice_input",
+                    label_visibility="collapsed",
                 )
-                st.rerun()
-            except Exception:
-                st.error("Something went wrong. Please try again in a moment.")
+            with send_voice_col:
+                send_voice = st.button("Send voice", use_container_width=True, key="send_voice_btn")
+
+            if send_voice:
+                if voice_clip is None:
+                    st.warning("Record audio first, then tap Send voice.")
+                else:
+                    audio_bytes = (
+                        voice_clip.getvalue()
+                        if hasattr(voice_clip, "getvalue")
+                        else voice_clip.read()
+                    )
+                    mime = getattr(voice_clip, "type", None) or "audio/wav"
+                    with st.spinner("Transcribing your voice..."):
+                        try:
+                            from src.voice import transcribe_audio
+                            transcript = transcribe_audio(
+                                audio_bytes,
+                                mime,
+                                sess.config.language_preference,
+                            )
+                        except Exception:
+                            st.error("Could not transcribe audio. Try again or use text chat.")
+                            transcript = ""
+
+                    if transcript:
+                        with st.spinner("Vidya is thinking..."):
+                            try:
+                                _submit_user_message(sess, transcript, speak_reply=True)
+                                st.rerun()
+                            except Exception:
+                                st.error("Something went wrong. Please try again in a moment.")
+
+            st.markdown("<div style='margin:6px 0 10px'></div>", unsafe_allow_html=True)
+
+        # Input
+        with st.form("chat_form", clear_on_submit=True):
+            ci, cb = st.columns([5,1])
+            with ci:
+                user_input = st.text_input("Message", placeholder="Type your message...",
+                                           label_visibility="collapsed")
+            with cb:
+                submitted = st.form_submit_button("Send →", use_container_width=True)
+
+        if submitted and user_input.strip():
+            with st.spinner("Vidya is thinking..."):
+                try:
+                    _submit_user_message(
+                        sess,
+                        user_input.strip(),
+                        speak_reply=st.session_state.voice_mode,
+                    )
+                    st.rerun()
+                except Exception:
+                    st.error("Something went wrong. Please try again in a moment.")
 
     # Bottom tabs
     st.markdown("---")

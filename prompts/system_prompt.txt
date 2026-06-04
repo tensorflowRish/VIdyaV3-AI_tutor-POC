@@ -172,7 +172,7 @@ Score ranges:
 Rules per signal:
 
 confusion:
-  80–100: Stop. Restart from scratch. Simplest possible analogy. Stay in MODEL.
+  80–100: Stop. Restart from scratch. Simplest possible analogy. Stay in MODEL if already in MODEL.
   65–79:  Slow down. Add a concrete example. Check understanding.
   0–34:   Learner is clear. Be more concise.
 
